@@ -38,6 +38,12 @@ async function run() {
             const result = await ideasCollection.findOne(query);
             res.json(result);
         })
+        // Featured ideas
+        app.get("/featured", async(req, res) => {
+            const cursor = ideasCollection.find().limit(6);
+            const result = await cursor.toArray();
+            res.json(result);
+        })
     } finally {
         //await client.close();
     }
