@@ -66,8 +66,11 @@ async function run() {
             let cursor;
             if(search) {
                 cursor = ideasCollection.find({
-                    title: { $eq: search }
-                })
+                    IdeaTitle: { 
+                        $regex: search,
+                        $options: "i"
+                    },
+                });
             } else {
                 cursor = ideasCollection.find();
             }
