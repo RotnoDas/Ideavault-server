@@ -1,3 +1,5 @@
+const dns = require("dns");
+dns.setServers(["8.8.8.8"], ["8.8.4.4"]);
 const express = require("express");
 const app = express();
 const dotenv = require("dotenv");
@@ -6,7 +8,13 @@ const cors = require("cors");
 app.use(cors());
 const port = process.env.PORT || 8000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 const uri = process.env.MONGO_URI;
+
+const JWKS = createRemoteJWKSet(
+    new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
+)
+console.log(JWKS);
 
 const client = new MongoClient(uri, {
     serverApi: {
@@ -15,6 +23,30 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     },
 });
+
+const logger = (req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+}
+
+const verifyToken = async(req, res, next) => {
+    const token = req.headers.authorization.split(" ")[1];
+    if(!token) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+    try {
+        const JWKS = createRemoteJWKSet(
+        new URL('http://localhost:3000/api/auth/jwks')
+        )
+        const { payload } = await jwtVerify(token, JWKS)
+        req.user = payload;
+        console.log(req.user);
+        next();
+    } catch (error) {
+        console.error('Token validation failed:', error)
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+}
 
 async function run() {
     try {
@@ -30,7 +62,7 @@ async function run() {
             res.json(result);
         })
         // Get single idea
-        app.get("/ideas/:ideaId", async(req, res) => {
+        app.get("/ideas/:ideaId", logger, verifyToken, async(req, res) => {
             const ideaId = req.params.ideaId;
             const query = {
                 _id: new ObjectId(ideaId)
