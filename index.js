@@ -77,6 +77,51 @@ async function run() {
             const result = await cursor.toArray();
             res.json(result);
         })
+        // Add new idea
+        app.post("/ideas", logger, verifyToken, async(req, res) => {
+            const newIdea = req.body;
+            let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
+            
+            // Resolve userName if missing (borrowing logic from the comment route)
+            if (!userName) {
+                const potentialIds = [
+                    req.user?.sub, 
+                    req.user?.userId, 
+                    req.user?.id, 
+                    req.user?.user?.id,
+                    req.user?.session?.userId
+                ];
+                let userObj = null;
+                for (const candidate of potentialIds) {
+                    if (candidate) {
+                        try {
+                            if (ObjectId.isValid(candidate)) {
+                                userObj = await database.collection("user").findOne({ _id: new ObjectId(candidate) });
+                            } else {
+                                const session = await database.collection("session").findOne({ token: candidate });
+                                if (session && session.userId) {
+                                    userObj = await database.collection("user").findOne({ _id: session.userId });
+                                }
+                            }
+                            if (userObj) break;
+                        } catch(e) {}
+                    }
+                }
+                if (userObj && userObj.name) {
+                    userName = userObj.name;
+                }
+            }
+
+            const documentToInsert = {
+                ...newIdea,
+                Author: userName || "Unknown User",
+                CreatedAt: new Date(),
+                comments: []
+            };
+
+            const result = await ideasCollection.insertOne(documentToInsert);
+            res.json(result);
+        });
         // Get single idea
         app.get("/ideas/:ideaId", logger, verifyToken, async(req, res) => {
             const ideaId = req.params.ideaId;
