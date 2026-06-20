@@ -31,7 +31,11 @@ const logger = (req, res, next) => {
 }
 
 const verifyToken = async(req, res, next) => {
-    const token = req.headers.authorization.split(" ")[1];
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ message: "Unauthorized: No token provided" });
+    }
+    const token = authHeader.split(" ")[1];
     if(!token) {
         return res.status(401).json({ message: "Unauthorized" });
     }
@@ -92,30 +96,126 @@ async function run() {
             const query = {
                 _id: new ObjectId(ideaId)
             }
+            let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
             
-            let userName = req.user.name || req.user.username;
-            const userIdString = req.user.sub || req.user.userId || req.user.id;
+            const potentialIds = [
+                req.user?.sub, 
+                req.user?.userId, 
+                req.user?.id, 
+                req.user?.user?.id,
+                req.user?.session?.userId
+            ];
             
-            if (userIdString) {
-                try {
-                    const userObj = await database.collection("user").findOne({ _id: new ObjectId(userIdString) });
-                    if (userObj && userObj.name) {
-                        userName = userObj.name;
+            if (!userName) {
+                let userObj = null;
+                for (const candidate of potentialIds) {
+                    if (candidate) {
+                        try {
+                            if (ObjectId.isValid(candidate)) {
+                                userObj = await database.collection("user").findOne({ _id: new ObjectId(candidate) });
+                            } else {
+                                const session = await database.collection("session").findOne({ token: candidate });
+                                if (session && session.userId) {
+                                    userObj = await database.collection("user").findOne({ _id: session.userId });
+                                }
+                            }
+                            if (userObj) break;
+                        } catch(e) {}
                     }
-                } catch(e) {
-                    console.log("Failed to lookup user by ID:", e);
+                }
+                if (userObj && userObj.name) {
+                    userName = userObj.name;
                 }
             }
-
             const result = await ideasCollection.findOneAndUpdate(query, {
                 $push: {
                     comments: {
                         comment,
-                        user: userName || "Unknown User"
+                        user: userName || "Unknown User",
+                        date: new Date()
                     }
                 }
             });
             res.json(result);
+        })
+        // My interactions
+        app.get("/my-interactions", logger, verifyToken, async(req, res) => {
+            const database = client.db("ideavault");
+            
+            // Better-auth JWT payload can have different structures.
+            // It could be at req.user.name, req.user.user.name, etc.
+            let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
+            
+            // Try to find an ID to look up in the DB
+            const potentialIds = [
+                req.user?.sub, 
+                req.user?.userId, 
+                req.user?.id, 
+                req.user?.user?.id,
+                req.user?.session?.userId
+            ];
+
+            // If we don't have a name, let's try the DB
+            if (!userName) {
+                let userObj = null;
+                for (const candidate of potentialIds) {
+                    if (candidate) {
+                        try {
+                            if (ObjectId.isValid(candidate)) {
+                                userObj = await database.collection("user").findOne({ _id: new ObjectId(candidate) });
+                            } else {
+                                // Maybe candidate is a session token string
+                                const session = await database.collection("session").findOne({ token: candidate });
+                                if (session && session.userId) {
+                                    userObj = await database.collection("user").findOne({ _id: session.userId });
+                                }
+                            }
+                            if (userObj) break;
+                        } catch(e) {
+                            // ignore and try next
+                        }
+                    }
+                }
+                if (userObj && userObj.name) {
+                    userName = userObj.name;
+                }
+            }
+
+            // Fallback if absolutely nothing works (just to avoid undefined search which returns nothing)
+            if (!userName) {
+                console.log("[/my-interactions] userName could not be resolved from JWT or DB!");
+                return res.json([]);
+            }
+
+            console.log(`[/my-interactions] Fetching comments for resolved userName: "${userName}"`);
+
+            // Case-insensitive regex search in DB
+            const cursor = ideasCollection.find({ "comments.user": new RegExp(`^${userName}$`, 'i') });
+            const ideas = await cursor.toArray();
+            
+            let userComments = [];
+            ideas.forEach(idea => {
+                if (idea.comments && Array.isArray(idea.comments)) {
+                    idea.comments.forEach(c => {
+                        // Case-insensitive check in JS as well
+                        if (c.user && typeof c.user === 'string' && c.user.toLowerCase() === userName.toLowerCase()) {
+                            userComments.push({
+                                ideaId: idea._id,
+                                IdeaTitle: idea.IdeaTitle,
+                                comment: c.comment,
+                                date: c.date || idea.createdAt || new Date()
+                            });
+                        }
+                    });
+                }
+            });
+            
+            console.log(`[/my-interactions] Found ${userComments.length} comments for "${userName}"`);
+            
+            // Sort by date descending (newest first)
+            userComments.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            res.json(userComments);
         })
     } finally {
         //await client.close();
