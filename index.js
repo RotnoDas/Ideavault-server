@@ -6,6 +6,7 @@ const dotenv = require("dotenv");
 dotenv.config();
 const cors = require("cors");
 app.use(cors());
+app.use(express.json());
 const port = process.env.PORT || 8000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
@@ -57,7 +58,15 @@ async function run() {
         const ideasCollection = database.collection("ideas");
         // Get all ideas
         app.get("/ideas", async(req, res) => {
-            const cursor = ideasCollection.find();
+            const {search} = req.query;
+            let cursor;
+            if(search) {
+                cursor = ideasCollection.find({
+                    title: { $eq: search }
+                })
+            } else {
+                cursor = ideasCollection.find();
+            }
             const result = await cursor.toArray();
             res.json(result);
         })
@@ -74,6 +83,38 @@ async function run() {
         app.get("/featured", async(req, res) => {
             const cursor = ideasCollection.find().limit(6);
             const result = await cursor.toArray();
+            res.json(result);
+        })
+        // Comment on idea
+        app.post("/ideas/:ideaId/comment", logger, verifyToken, async(req, res) => {
+            const ideaId = req.params.ideaId;
+            const comment = req.body.comment;
+            const query = {
+                _id: new ObjectId(ideaId)
+            }
+            
+            let userName = req.user.name || req.user.username;
+            const userIdString = req.user.sub || req.user.userId || req.user.id;
+            
+            if (userIdString) {
+                try {
+                    const userObj = await database.collection("user").findOne({ _id: new ObjectId(userIdString) });
+                    if (userObj && userObj.name) {
+                        userName = userObj.name;
+                    }
+                } catch(e) {
+                    console.log("Failed to lookup user by ID:", e);
+                }
+            }
+
+            const result = await ideasCollection.findOneAndUpdate(query, {
+                $push: {
+                    comments: {
+                        comment,
+                        user: userName || "Unknown User"
+                    }
+                }
+            });
             res.json(result);
         })
     } finally {
