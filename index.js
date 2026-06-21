@@ -15,7 +15,6 @@ const uri = process.env.MONGO_URI;
 const JWKS = createRemoteJWKSet(
     new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
 )
-console.log(JWKS);
 
 const client = new MongoClient(uri, {
     serverApi: {
@@ -41,7 +40,7 @@ const verifyToken = async(req, res, next) => {
     }
     try {
         const JWKS = createRemoteJWKSet(
-        new URL('http://localhost:3000/api/auth/jwks')
+        new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
         )
         const { payload } = await jwtVerify(token, JWKS)
         req.user = payload;
@@ -85,7 +84,6 @@ async function run() {
             const newIdea = req.body;
             let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
             
-            // Resolve userName if missing (borrowing logic from the comment route)
             if (!userName) {
                 const potentialIds = [
                     req.user?.sub, 
@@ -204,7 +202,6 @@ async function run() {
             const { ideaId, commentId } = req.params;
             const { comment } = req.body;
             
-            // For security, ideally we check userId, but the frontend will only show the Edit button if it matches
             const query = { _id: new ObjectId(ideaId), "comments.id": commentId };
             
             const result = await ideasCollection.updateOne(query, {
@@ -241,7 +238,6 @@ async function run() {
         app.put("/ideas/:ideaId", logger, verifyToken, async(req, res) => {
             const ideaId = req.params.ideaId;
             const updatedIdea = req.body;
-            // Remove _id from body if it exists to avoid MongoDB error
             delete updatedIdea._id;
             
             const query = { _id: new ObjectId(ideaId) };
@@ -300,11 +296,8 @@ async function run() {
         app.get("/my-interactions", logger, verifyToken, async(req, res) => {
             const database = client.db("ideavault");
             
-            // Better-auth JWT payload can have different structures.
-            // It could be at req.user.name, req.user.user.name, etc.
             let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
             
-            // Try to find an ID to look up in the DB
             const potentialIds = [
                 req.user?.sub, 
                 req.user?.userId, 
@@ -313,7 +306,6 @@ async function run() {
                 req.user?.session?.userId
             ];
 
-            // If we don't have a name, let's try the DB
             if (!userName) {
                 let userObj = null;
                 for (const candidate of potentialIds) {
@@ -322,7 +314,6 @@ async function run() {
                             if (ObjectId.isValid(candidate)) {
                                 userObj = await database.collection("user").findOne({ _id: new ObjectId(candidate) });
                             } else {
-                                // Maybe candidate is a session token string
                                 const session = await database.collection("session").findOne({ token: candidate });
                                 if (session && session.userId) {
                                     userObj = await database.collection("user").findOne({ _id: session.userId });
@@ -330,7 +321,7 @@ async function run() {
                             }
                             if (userObj) break;
                         } catch(e) {
-                            // ignore and try next
+                            
                         }
                     }
                 }
@@ -339,15 +330,11 @@ async function run() {
                 }
             }
 
-            // Fallback if absolutely nothing works (just to avoid undefined search which returns nothing)
             if (!userName) {
                 console.log("[/my-interactions] userName could not be resolved from JWT or DB!");
                 return res.json([]);
             }
 
-            console.log(`[/my-interactions] Fetching comments for resolved userName: "${userName}"`);
-
-            // Case-insensitive regex search in DB
             const cursor = ideasCollection.find({ "comments.user": new RegExp(`^${userName}$`, 'i') });
             const ideas = await cursor.toArray();
             
@@ -368,9 +355,6 @@ async function run() {
                 }
             });
             
-            console.log(`[/my-interactions] Found ${userComments.length} comments for "${userName}"`);
-            
-            // Sort by date descending (newest first)
             userComments.sort((a, b) => new Date(b.date) - new Date(a.date));
 
             res.json(userComments);
