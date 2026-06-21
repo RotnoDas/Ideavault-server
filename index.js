@@ -84,6 +84,7 @@ async function run() {
             const newIdea = req.body;
             let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
             
+            let userObj = null;
             if (!userName) {
                 const potentialIds = [
                     req.user?.sub, 
@@ -92,7 +93,6 @@ async function run() {
                     req.user?.user?.id,
                     req.user?.session?.userId
                 ];
-                let userObj = null;
                 for (const candidate of potentialIds) {
                     if (candidate) {
                         try {
@@ -112,10 +112,18 @@ async function run() {
                     userName = userObj.name;
                 }
             }
+            
+            let finalUserId = null;
+            if (userObj && userObj._id) {
+                finalUserId = userObj._id.toString();
+            } else {
+                finalUserId = req.user?.sub || req.user?.userId || req.user?.id || req.user?.user?.id;
+            }
 
             const documentToInsert = {
                 ...newIdea,
                 Author: userName || "Unknown User",
+                AuthorId: finalUserId,
                 CreatedAt: new Date(),
                 comments: []
             };
@@ -281,12 +289,28 @@ async function run() {
                     userName = userObj.name;
                 }
             }
+            
+            let finalUserId = null;
+            for (const candidate of potentialIds) {
+                if (candidate) {
+                    finalUserId = candidate;
+                    break;
+                }
+            }
 
-            if (!userName) {
+            if (!userName && !finalUserId) {
                 return res.json([]);
             }
 
-            const cursor = ideasCollection.find({ Author: new RegExp(`^${userName}$`, 'i') });
+            const queryConds = [];
+            if (userName) {
+                queryConds.push({ Author: new RegExp(`^${userName}$`, 'i') });
+            }
+            if (finalUserId) {
+                queryConds.push({ AuthorId: finalUserId });
+            }
+
+            const cursor = ideasCollection.find({ $or: queryConds });
             const result = await cursor.toArray();
             
             res.json(result);
@@ -330,19 +354,37 @@ async function run() {
                 }
             }
 
-            if (!userName) {
-                console.log("[/my-interactions] userName could not be resolved from JWT or DB!");
+            let finalUserId = null;
+            for (const candidate of potentialIds) {
+                if (candidate) {
+                    finalUserId = candidate;
+                    break;
+                }
+            }
+
+            if (!userName && !finalUserId) {
+                console.log("[/my-interactions] userName and finalUserId could not be resolved from JWT or DB!");
                 return res.json([]);
             }
 
-            const cursor = ideasCollection.find({ "comments.user": new RegExp(`^${userName}$`, 'i') });
+            const queryConds = [];
+            if (userName) {
+                queryConds.push({ "comments.user": new RegExp(`^${userName}$`, 'i') });
+            }
+            if (finalUserId) {
+                queryConds.push({ "comments.userId": finalUserId });
+            }
+
+            const cursor = ideasCollection.find({ $or: queryConds });
             const ideas = await cursor.toArray();
             
             let userComments = [];
             ideas.forEach(idea => {
                 if (idea.comments && Array.isArray(idea.comments)) {
                     idea.comments.forEach(c => {
-                        if (c.user && typeof c.user === 'string' && c.user.toLowerCase() === userName.toLowerCase()) {
+                        const matchUserId = c.userId && finalUserId && c.userId === finalUserId;
+                        const matchUserName = c.user && userName && typeof c.user === 'string' && c.user.toLowerCase() === userName.toLowerCase();
+                        if (matchUserId || matchUserName) {
                             userComments.push({
                                 ideaId: idea._id,
                                 IdeaTitle: idea.IdeaTitle,
@@ -359,6 +401,31 @@ async function run() {
 
             res.json(userComments);
         })
+        // Update user name in existing ideas and comments
+        app.put("/update-user-name", logger, verifyToken, async(req, res) => {
+            const { oldName, newName } = req.body;
+            if (!oldName || !newName) {
+                return res.status(400).json({ error: "Missing oldName or newName" });
+            }
+            try {
+                // update all ideas authored by oldName
+                await ideasCollection.updateMany(
+                    { Author: oldName },
+                    { $set: { Author: newName } }
+                );
+                // update all comments authored by oldName
+                await ideasCollection.updateMany(
+                    { "comments.user": oldName },
+                    { $set: { "comments.$[elem].user": newName } },
+                    { arrayFilters: [ { "elem.user": oldName } ] }
+                );
+                res.json({ success: true });
+            } catch(error) {
+                console.error("Error updating user name globally:", error);
+                res.status(500).json({ error: "Failed to update user name globally" });
+            }
+        })
+        
     } finally {
         //await client.close();
     }
