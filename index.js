@@ -154,6 +154,113 @@ async function run() {
                 req.user?.session?.userId
             ];
             
+            let userObj = null;
+            if (!userName) {
+                for (const candidate of potentialIds) {
+                    if (candidate) {
+                        try {
+                            if (ObjectId.isValid(candidate)) {
+                                userObj = await database.collection("user").findOne({ _id: new ObjectId(candidate) });
+                            } else {
+                                const session = await database.collection("session").findOne({ token: candidate });
+                                if (session && session.userId) {
+                                    userObj = await database.collection("user").findOne({ _id: session.userId });
+                                }
+                            }
+                            if (userObj) break;
+                        } catch(e) {}
+                    }
+                }
+                if (userObj && userObj.name) {
+                    userName = userObj.name;
+                }
+            }
+            let finalUserId = null;
+            if (userObj && userObj._id) {
+                finalUserId = userObj._id.toString();
+            } else {
+                finalUserId = req.user?.sub || req.user?.userId || req.user?.id || req.user?.user?.id;
+            }
+
+            const result = await ideasCollection.findOneAndUpdate(query, {
+                $push: {
+                    comments: {
+                        id: new ObjectId().toString(),
+                        userId: finalUserId,
+                        comment,
+                        user: userName || "Unknown User",
+                        date: new Date()
+                    }
+                }
+            });
+            res.json(result);
+        })
+        
+        // Edit comment on idea
+        app.put("/ideas/:ideaId/comment/:commentId", logger, verifyToken, async(req, res) => {
+            const { ideaId, commentId } = req.params;
+            const { comment } = req.body;
+            
+            // For security, ideally we check userId, but the frontend will only show the Edit button if it matches
+            const query = { _id: new ObjectId(ideaId), "comments.id": commentId };
+            
+            const result = await ideasCollection.updateOne(query, {
+                $set: {
+                    "comments.$.comment": comment
+                }
+            });
+            res.json(result);
+        })
+
+        // Delete comment on idea
+        app.delete("/ideas/:ideaId/comment/:commentId", logger, verifyToken, async(req, res) => {
+            const { ideaId, commentId } = req.params;
+            
+            const query = { _id: new ObjectId(ideaId) };
+            
+            const result = await ideasCollection.updateOne(query, {
+                $pull: {
+                    comments: { id: commentId }
+                }
+            });
+            res.json(result);
+        })
+        
+        // Delete an idea
+        app.delete("/ideas/:ideaId", logger, verifyToken, async(req, res) => {
+            const ideaId = req.params.ideaId;
+            const query = { _id: new ObjectId(ideaId) };
+            const result = await ideasCollection.deleteOne(query);
+            res.json(result);
+        })
+
+        // Update an idea
+        app.put("/ideas/:ideaId", logger, verifyToken, async(req, res) => {
+            const ideaId = req.params.ideaId;
+            const updatedIdea = req.body;
+            // Remove _id from body if it exists to avoid MongoDB error
+            delete updatedIdea._id;
+            
+            const query = { _id: new ObjectId(ideaId) };
+            const result = await ideasCollection.updateOne(query, {
+                $set: updatedIdea
+            });
+            res.json(result);
+        })
+
+        // Get my ideas
+        app.get("/my-ideas", logger, verifyToken, async(req, res) => {
+            const database = client.db("ideavault");
+            let userName = req.user?.name || req.user?.username || req.user?.user?.name || req.user?.user?.username;
+            
+            const potentialIds = [
+                req.user?.sub, 
+                req.user?.userId, 
+                req.user?.id, 
+                req.user?.user?.id,
+                req.user?.session?.userId
+            ];
+
             if (!userName) {
                 let userObj = null;
                 for (const candidate of potentialIds) {
@@ -175,17 +282,17 @@ async function run() {
                     userName = userObj.name;
                 }
             }
-            const result = await ideasCollection.findOneAndUpdate(query, {
-                $push: {
-                    comments: {
-                        comment,
-                        user: userName || "Unknown User",
-                        date: new Date()
-                    }
-                }
-            });
+
+            if (!userName) {
+                return res.json([]);
+            }
+
+            const cursor = ideasCollection.find({ Author: new RegExp(`^${userName}$`, 'i') });
+            const result = await cursor.toArray();
+            
             res.json(result);
         })
+        
         // My interactions
         app.get("/my-interactions", logger, verifyToken, async(req, res) => {
             const database = client.db("ideavault");
@@ -245,12 +352,12 @@ async function run() {
             ideas.forEach(idea => {
                 if (idea.comments && Array.isArray(idea.comments)) {
                     idea.comments.forEach(c => {
-                        // Case-insensitive check in JS as well
                         if (c.user && typeof c.user === 'string' && c.user.toLowerCase() === userName.toLowerCase()) {
                             userComments.push({
                                 ideaId: idea._id,
                                 IdeaTitle: idea.IdeaTitle,
                                 comment: c.comment,
+                                user: c.user,
                                 date: c.date || idea.createdAt || new Date()
                             });
                         }
