@@ -54,7 +54,7 @@ const verifyToken = async(req, res, next) => {
 
 async function run() {
     try {
-        await client.connect();
+        //await client.connect();
         // await client.db("admin").command({ ping: 1 });
         // console.log("Pinged your deployment. You successfully connected to MongoDB!");
         const database = client.db("ideavault");
